@@ -1,5 +1,3 @@
-import requests
-from bs4 import BeautifulSoup
 import time
 import csv
 import json
@@ -7,28 +5,61 @@ from datetime import datetime
 import random
 import re
 from urllib.parse import quote
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from bs4 import BeautifulSoup
 
 class KabumScraper:
     def __init__(self):
-        self.session = requests.Session()
-        # Enhanced headers to mimic a real browser more closely
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Cache-Control': 'max-age=0',
-            'Referer': 'https://www.kabum.com.br/',
-        }
-        self.session.headers.update(self.headers)
+        # Setup Chrome options for anti-detection
+        self.driver = None
+        self.setup_driver()
+
+    def setup_driver(self):
+        """Setup Chrome driver with options to bypass anti-bot measures"""
+        chrome_options = Options()
+        
+        # Anti-detection options
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--profile-directory=Default')
+        chrome_options.add_argument('--incognito')
+        chrome_options.add_argument('--disable-plugins-discovery')
+        chrome_options.add_argument('--start-maximized')
+        chrome_options.add_argument('--disable-web-security')
+        chrome_options.add_argument('--ignore-certificate-errors')
+        
+        # Random user agent to avoid detection
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
+        ]
+        random_user_agent = random.choice(user_agents)
+        chrome_options.add_argument(f'--user-agent={random_user_agent}')
+        
+        # Additional options to look more human
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        
+        from webdriver_manager.chrome import ChromeDriverManager
+        from selenium.webdriver.chrome.service import Service
+        
+        service = Service(ChromeDriverManager().install())
+        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        # Execute script to remove webdriver property
+        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     def scrape_products(self):
-        """Scrape products from Kabum"""
+        """Scrape products from Kabum using Selenium to handle JavaScript"""
         print("Procurando por Samsung Galaxy A05s na Kabum...")
         
         # Try multiple search approaches
@@ -39,66 +70,75 @@ class KabumScraper:
         for term in search_terms:
             print(f"Tentando busca com: {term}")
             
-            # Method 1: Using the standard search URL
-            search_url = f"https://www.kabum.com.br/cgi-local/site/listagem/listagem.cgi?string={quote(term)}&btnG="
+            # Random delay to simulate human behavior
+            time.sleep(random.uniform(3, 7))
             
             try:
-                # Random delay to avoid being blocked
-                time.sleep(random.uniform(3, 6))
+                # Navigate to search page
+                search_url = f"https://www.kabum.com.br/busca/{quote(term)}"
+                self.driver.get(search_url)
                 
-                response = self.session.get(search_url)
+                # Wait for page to load completely
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
                 
-                # If the standard search doesn't work, try the API approach
-                if response.status_code != 200 or "products" not in response.text.lower():
-                    # Method 2: Direct search page
-                    search_url = f"https://www.kabum.com.br/busca?s={quote(term)}"
-                    response = self.session.get(search_url)
+                # Wait for products to load (look for product containers)
+                try:
+                    # Wait for product containers to be present
+                    WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='product-card'], .product-card, .minigallery-item, .gallery-item"))
+                    )
+                except TimeoutException:
+                    print("Products may not have loaded in time, continue with available content")
                 
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # Try to find product containers with multiple selector approaches
-                    selectors = [
-                        '[data-testid="product-card"]',
-                        '.product-card',
-                        '.card',
-                        '[class*="product"]',
-                        '.listagem-container .item',
-                        'article',
-                        '.item',
-                        '[data-cy="product-card"]'
-                    ]
-                    
-                    product_containers = []
-                    for selector in selectors:
-                        elements = soup.select(selector)
-                        if elements:
-                            product_containers = elements
-                            print(f"Found {len(elements)} elements with selector: {selector}")
-                            break
-                    
-                    # If still no containers, try a more general approach
-                    if not product_containers:
-                        product_containers = soup.find_all(['div', 'article'], attrs={'data-testid': True})
-                    
-                    # If still no containers, try to find anything that might be a product
-                    if not product_containers:
-                        product_containers = soup.find_all(['div', 'article'], class_=re.compile(r'product|card|item'))
-                    
-                    for container in product_containers:
-                        product = self.extract_product_info(container)
-                        if product:
-                            products.append(product)
-                    
-                    # If we found products, break out of the loop
-                    if products:
+                # Get the page source after JavaScript execution
+                page_source = self.driver.page_source
+                soup = BeautifulSoup(page_source, 'html.parser')
+                
+                # Look for product containers with multiple selector approaches
+                selectors = [
+                    '[data-testid="product-card"]',
+                    '[data-testid="product-card-item"]',
+                    '.product-card',
+                    '.product-card-wrapper', 
+                    '.minigallery-item',
+                    '.gallery-item',
+                    'article',
+                    # Additional selectors that might work
+                    '[class*="product"]',
+                    '[class*="Produto"]',
+                    '[class*="produto"]',
+                    '[class*="item"]',
+                    '[class*="card"]'
+                ]
+                
+                product_containers = []
+                for selector in selectors:
+                    elements = soup.select(selector)
+                    if elements:
+                        product_containers = elements
+                        print(f"Found {len(elements)} elements with selector: {selector}")
                         break
-                else:
-                    print(f"Failed to access page with status code: {response.status_code}")
-            
-            except requests.RequestException as e:
-                print(f"Error accessing Kabum with term {term}: {e}")
-                continue
+                
+                # If still no containers, try a more general approach
+                if not product_containers:
+                    product_containers = soup.find_all(['div', 'article'], attrs={'data-testid': True})
+                
+                # If still no containers, try to find anything that might be a product
+                if not product_containers:
+                    product_containers = soup.find_all(['div', 'article'], class_=re.compile(r'product|card|item|produto'))
+                
+                # Extract product info from each container
+                for container in product_containers:
+                    product = self.extract_product_info(container)
+                    if product:
+                        products.append(product)
+                
+                # If we found products, break out of the loop
+                if products:
+                    break
+                    
             except Exception as e:
                 print(f"Error processing Kabum page for term {term}: {e}")
                 continue
@@ -114,6 +154,7 @@ class KabumScraper:
             # Try different selectors for the title
             title_selectors = [
                 '[data-testid*="title"]',
+                '[data-testid="product-name"]',
                 '[class*="name"]',
                 '[class*="title"]',
                 '.nameCard',
@@ -135,7 +176,7 @@ class KabumScraper:
             if title == "Título não encontrado" or len(title) <= 5:
                 for tag in container.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'div', 'span']):
                     text = tag.get_text(strip=True)
-                    if len(text) > 10 and ('galaxy' in text.lower() or 'a05s' in text.lower()):
+                    if len(text) > 10 and any(keyword in text.lower() for keyword in ['galaxy', 'a05s', 'samsung']):
                         title = text
                         break
             
@@ -145,7 +186,10 @@ class KabumScraper:
             # Try different selectors for the price
             price_selectors = [
                 '[data-testid*="price"]',
+                '[data-testid="price-value"]',
                 '.priceCard',
+                '.final-price',
+                '.cash-price',
                 '[class*="price"]',
                 '.money'
             ]
@@ -196,14 +240,31 @@ class KabumScraper:
             
             # Check if this product matches our target (Samsung Galaxy A05s 128GB 6GB RAM) and is new
             title_lower = title.lower()
+            # Check if product contains our target keywords and filter out unwanted items
             if ('galaxy' in title_lower and 
                 'a05s' in title_lower and 
+                'samsung' in title_lower and
                 '128' in title_lower and 
                 ('6gb' in title_lower or '6 gb' in title_lower) and
                 'recondicionado' not in title_lower and
                 'recond' not in title_lower and
                 'usado' not in title_lower and
                 'segunda m' not in title_lower):
+                return {
+                    'title': title,
+                    'price': price,
+                    'link': link,
+                    'store': 'Kabum',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+            # More permissive check in case specifications aren't in title
+            elif ('galaxy' in title_lower and 
+                  'a05s' in title_lower and 
+                  'samsung' in title_lower and
+                  'recondicionado' not in title_lower and
+                  'recond' not in title_lower and
+                  'usado' not in title_lower and
+                  'segunda m' not in title_lower):
                 return {
                     'title': title,
                     'price': price,
@@ -253,6 +314,11 @@ class KabumScraper:
         
         print(f"Resultados salvos em {filename}")
 
+    def close(self):
+        """Close the selenium driver"""
+        if self.driver:
+            self.driver.quit()
+
 
 def main():
     scraper = KabumScraper()
@@ -274,6 +340,8 @@ def main():
         print("\nDados também salvos em precos_kabum_galaxy_a05s.json")
     else:
         print("\nNenhum produto correspondente encontrado na Kabum.")
+    
+    scraper.close()
 
 
 if __name__ == "__main__":
